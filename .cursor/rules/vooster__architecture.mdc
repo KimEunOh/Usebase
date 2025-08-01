@@ -1,0 +1,207 @@
+---
+description:
+globs:
+alwaysApply: true
+---
+# Technical Requirements Document (TRD)
+
+## 1. Executive Technical Summary
+
+- **프로젝트 개요**  
+  팀·조직 단위로 문서 기반 RAG, 실시간 검색, OCR, 자동 기획서 작성 등을 제공하며 실제 사용량 기반 과금하는 웹/데스크톱 하이브리드 AI 플랫폼을 구축. Next.js(웹), Electron(데스크톱) 클라이언트와 NestJS 백엔드를 Monorepo로 구성하고, Supabase(PostgreSQL+pgvector+Auth+Storage)와 Redis·Kafka를 통합하여 Layered Architecture 및 AOP 스타일 미들웨어로 보안·로깅·트랜잭션을 처리.
+
+- **핵심 기술 스택**  
+  프런트엔드: Next.js 15 + TypeScript + Tailwind CSS  
+  데스크톱: Electron + React (Next.js 코드 공유)  
+  백엔드: NestJS (Node.js) + TypeScript, RESTful API, AOP 미들웨어  
+  데이터베이스: Supabase PostgreSQL + pgvector 확장, Read Replica  
+  캐시: Redis (LRU 캐시)  
+  메시지 브로커: Kafka  
+  인증/보안: Supabase Auth(SAML/OAuth + 이메일/비번), RBAC, RLS, AES-256/TLS1.2+  
+  인프라: Vercel(프런트), Fly.io(NestJS), Supabase
+
+- **주요 기술 목표**  
+  • p95 응답 시간 < 2.5초, LLM 호출당 평균 지연 < 1.5초  
+  • 동시 세션 5,000 이상 처리, 월 가동률 99.9%  
+  • RAG 검색 정확도 ≥ 90%, OCR 한글 정확도 ≥ 95%  
+  • p99 에러율 < 0.5%, 배포 롤백률 < 2%
+
+- **핵심 기술 가정**  
+  • 주요 LLM API(OpenAI 등) 평균 응답 시간 500ms 내외  
+  • pgvector + IVFFLAT 인덱스로 대용량 벡터 검색 성능 확보  
+  • Supabase RLS 및 RBAC으로 멀티테넌시 보안 분리 가능  
+  • Kafka로 이벤트 기반 비동기 처리 및 확장성 제공
+
+---
+
+## 2. Tech Stack
+
+| Category            | Technology / Library         | Reasoning (선택 이유)                                    |
+| ------------------- | ---------------------------- | -------------------------------------------------------- |
+| Web Frontend        | Next.js 15 + TypeScript      | SSR·CSR 조합, 코드 스플리팅, 성능 최적화                 |
+| Styling             | Tailwind CSS                 | 유틸리티 퍼스트, 빠른 UI 개발                            |
+| Desktop Frontend    | Electron + React             | 기존 React/Next.js 코드 재사용, 크로스플랫폼 데스크톱 지원 |
+| Backend Framework   | NestJS + TypeScript          | AOP 미들웨어, 모듈화된 Layered Architecture              |
+| API Protocol        | RESTful API                  | 표준화된 자원 기반 설계, 확장성 및 호환성                |
+| Database            | Supabase PostgreSQL          | 완전관리형 Postgres, RLS/RBAC, 스토리지 통합            |
+| Vector DB Extension | pgvector + IVFFLAT           | PostgreSQL 내 벡터 검색, 빠른 근사 최근접 이웃 검색      |
+| Cache               | Redis (LRU)                  | Prompt-Response, 비용 요약 캐싱, 높은 처리량             |
+| Message Broker      | Kafka                        | 비동기 이벤트 처리, 확장성, 내결함성                     |
+| Authentication      | Supabase Auth (SAML/OAuth)   | 이메일/비밀번호, 싱글사인온, 조직별 권한 관리             |
+| Storage             | Supabase Storage             | 문서/이미지 파일 관리, 버전관리                          |
+| Infra (Web)         | Vercel                       | Next.js 최적화 배포, 글로벌 CDN                          |
+| Infra (Backend)     | Fly.io                       | 컨테이너 기반 글로벌 배포, 자동 스케일링                  |
+| CI/CD               | GitHub Actions               | Monorepo 빌드·테스트·배포 자동화                        |
+| Monitoring          | Prometheus + Grafana         | 시스템 성능·메트릭 수집 및 시각화                       |
+
+---
+
+## 3. System Architecture Design
+
+### Top-Level Building Blocks
+- **Web Client (Next.js)**  
+  • 페이지 렌더링(SSR/ISR), API 호출, 상태 관리(Redux 또는 SWR)  
+- **Desktop Client (Electron)**  
+  • Next.js Static Bundle 로드, OS 통합(파일 시스템, 알림)  
+- **API Gateway (NestJS)**  
+  • 인증·인가 미들웨어(AOP), 로깅, 에러 처리, 트랜잭션 관리  
+- **Core Services**  
+  • RAG Service: pgvector 검색, 메타데이터 인덱싱  
+  • OCR Service: AWS Textract 연동, 한글 전처리  
+  • Auto-Doc Service: 템플릿 기반 기획서/보고서 생성  
+  • Billing Service: Kafka 이벤트 처리, 비용 집계, Materialized View  
+- **Data Stores**  
+  • Supabase PostgreSQL (Primary + Read Replica)  
+  • Redis 캐시 (Prompt-Response, 요약 결과)  
+  • Kafka 토픽 (Usage Events, Billing Events)
+
+### Top-Level Component Interaction Diagram
+```mermaid
+graph TD
+  A[Next.js Frontend] -->|REST API| B[NestJS API]
+  C[Electron Desktop] -->|REST API| B
+  B -->|pg & pgvector| D[Supabase PostgreSQL]
+  B -->|Redis| E[Redis Cache]
+  B -->|Kafka| F[Kafka Broker]
+  B -->|S3 API| G[Supabase Storage]
+  B -->|Auth SDK| H[Supabase Auth]
+  B -->|External| I[LLM API / AWS Textract]
+```
+
+- Next.js/Electron 클라이언트가 NestJS API에 REST 요청  
+- API는 Supabase PostgreSQL·Vector, Redis 캐시, Kafka 토픽, 외부 LLM/OCR 서비스와 상호작용  
+- Storage는 문서·이미지 보관, Auth는 SSO 및 RBAC 제공  
+
+### Code Organization & Convention
+
+**도메인 기반 구조**  
+- user-management, document-management, rag-search, ocr, billing, notification 등으로 분리  
+- 각 도메인은 presentation, application, domain, infrastructure 레이어 포함  
+
+**공통 모듈**  
+- shared (유틸, 타입, 인터페이스), config, logger, exception-filter  
+
+**폴더 구조 (Monorepo)**  
+```
+/
+├── apps
+│   ├── web            # Next.js 애플리케이션
+│   └── desktop        # Electron 애플리케이션
+├── services
+│   ├── api            # NestJS 백엔드
+│   ├── worker         # Kafka 이벤트 처리 워커
+│   └── billing        # 비용 집계 마이크로서비스
+├── libs
+│   ├── shared         # 공통 유틸/타입/미들웨어
+│   ├── config         # 환경 설정
+│   └── domain         # 도메인 모델/서비스 인터페이스
+├── infra
+│   ├── terraform      # 인프라 코드
+│   └── kubernetes     # 오케스트레이션 매니페스트
+├── docker-compose.yml
+├── package.json
+└── tsconfig.json
+```
+
+### Data Flow & Communication Patterns
+- **Client-Server 통신**: RESTful API, JWT + SAML/OAuth 토큰 헤더  
+- **DB Interaction**: TypeORM or Prisma 사용, RLS 정책 적용, Soft Delete + Versioning  
+- **캐시 전략**: Redis LRU 캐시(Prompt-Response, 문서 요약), TTL 기반 무효화  
+- **비동기 이벤트**: 사용량·과금 이벤트 Kafka 발행 및 소비, idempotent 처리  
+- **데이터 동기화**: Materialized View로 비용 요약, Read Replica로 읽기 분산  
+
+---
+
+## 4. Performance & Optimization Strategy
+
+- 벡터 검색: pgvector + IVFFLAT, 인덱스 파라미터 튜닝  
+- Redis 캐시: Prompt-Response 및 비용 요약, 높은 히트율 유지  
+- DB Connection Pooling 및 Read Replica 활용으로 동시성 확장  
+- NestJS AOP 미들웨어로 로깅·트랜잭션 비용 최소화  
+- HTTP/2, gzip 압축, ISR/SSR 캐시 전략 적용  
+
+---
+
+## 5. Implementation Roadmap & Milestones
+
+### Phase 1: Foundation (MVP 구현, M0–M3)
+- **Core Infrastructure**: Monorepo 셋업, Vercel/Fly.io 배포 파이프라인  
+- **Essential Features**: 문서 업로드·RAG 인덱싱·검색, 실시간 스트리밍 검색, 기본 과금 대시보드  
+- **Basic Security**: Supabase Auth 이메일/비번, RBAC, RLS 정책  
+- **Dev Setup**: GitHub Actions CI, 코드 린트·테스트 환경  
+- **Timeline**: 3개월
+
+### Phase 2: Feature Enhancement (M4–M6)
+- **Advanced Features**: OCR 통합, 자동 기획서 작성 모듈, CSV/PDF 내보내기  
+- **Performance Tuning**: Redis 캐시, Kafka 이벤트 처리 최적화  
+- **Enhanced Security**: SAML/OAuth SSO, 감사 로그 1년 저장  
+- **Monitoring**: Prometheus·Grafana, 알림 설정  
+- **Timeline**: 3개월
+
+### Phase 3: Scaling & Optimization (M7–M9)
+- **Scalability**: 오토스케일링, 멀티 리전 배포 옵션  
+- **Advanced Integrations**: 서드파티 AI 마켓플레이스, 워크플로 자동화  
+- **Enterprise Features**: 멀티언어 RAG, 음성 인식·회의록 요약  
+- **Compliance**: ISMS·ISO27001 감사 대응  
+- **Timeline**: 3개월
+
+---
+
+## 6. Risk Assessment & Mitigation Strategies
+
+### Technical Risk Analysis
+- **LLM 요금 폭증**  
+  Mitigation: 응답 캐싱, 요약·토큰 절감 알고리즘, 사전 필터링  
+- **보안 규제 (공공기관)**  
+  Mitigation: 온프렘 옵션, 네트워크 격리, 강화된 RLS  
+- **벡터 검색 정확도 저하**  
+  Mitigation: 하이브리드 BM25+pgvector, 주기적 파인튜닝  
+
+### Project Delivery Risks
+- **일정 지연**  
+  Mitigation: 중요 경로 식별, 스파이크 프로토타입 조기 수행  
+- **리소스 부족**  
+  Mitigation: 외부 컨설팅·아웃소싱, 크로스 트레이닝  
+- **품질 저하**  
+  Mitigation: 코드 리뷰, 자동화된 테스트 커버리지 기준  
+- **배포 이슈**  
+  Mitigation: 카나리 배포, 롤백 스크립트 준비  
+
+---
+
+**Assumptions & Constraints**  
+- 외부 LLM API 안정성 확보  
+- Supabase SLA 준수  
+- 초기 조직 수 100개, ARPU 30%↑ 목표  
+
+**Trade-offs**  
+- NestJS 도입으로 학습 곡선 존재  
+- Kafka 도입으로 복잡도 증가하나 확장성·내결함성 확보  
+
+**Next Steps**  
+1. Monorepo 초기 셋업 및 CI/CD 파이프라인 구축  
+2. 핵심 도메인 모델 정의 및 DB 스키마 설계  
+3. MVP 주요 기능 프로토타입 개발 및 내부 검증  
+4. 보안·성능 테스트 계획 수립 및 실행  
+
+---
